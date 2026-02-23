@@ -41,7 +41,7 @@ def generate_prompt(problem):
         call_format = "\nPlease write your code using Standard Input, i.e. input() and print()."
         prompt += call_format
     else:
-        call_format = "\Please write your code using Call-Based format."
+        call_format = "\nPlease write your code using Call-Based format."
         prompt += call_format
 
     if starter_code:
@@ -52,7 +52,6 @@ def generate_prompt(problem):
 
 def main(args):
     os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
-
     match args.model:
         case "codellama_7b":
             model = LLMModel(name='codellama_7b',
@@ -65,7 +64,8 @@ def main(args):
                 name='deepseek_coder_6_7b',
                 model_id='deepseek-ai/deepseek-coder-6.7b-instruct',
                 prompt_template=
-                '''You are an AI programming assistant, utilizing the DeepSeek Coder model.\n### Instruction:\n{prompt}\n### Response:\n''',
+                '''You are an AI programming assistant, utilizing the DeepSeek Coder model.\
+                \n### Instruction:\n{prompt}\n### Response:\n''',
                 extract_pattern=r'### Response:.*?```python(.*?)```')
         case "gemma":
             model = LLMModel(
@@ -115,7 +115,7 @@ def main(args):
 
     to_generate = {p["id"]: args.n for p in problems}
     if os.path.exists(args.save_path):
-        with open(args.save_path, 'r') as file:
+        with open(args.save_path, 'r', encoding='utf-8') as file:
             existing_results = [
                 json.loads(item) for item in file.read().strip().splitlines()
             ]
