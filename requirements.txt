@@ -5,3 +5,5 @@ numpy
 torch
 accelerate
 sentencepiece
+requests>=2.0
+ollama>=0.1

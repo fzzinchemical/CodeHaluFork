@@ -1,10 +1,13 @@
 import re
+import os
 import random
 import subprocess
 import shlex
+import json
 
 import numpy as np
 
+import requests
 import torch
 from typing import Optional
 
@@ -53,6 +56,10 @@ class LLMModel:
         self.extract_pattern = extract_pattern
         self.backend = backend
         self.trust_remote_code = trust_remote_code
+        # Ollama HTTP endpoint (used when using python client or HTTP fallback)
+        # Can be overridden by setting the `OLLAMA_API_URL` environment variable.
+        self.ollama_url = os.environ.get('OLLAMA_API_URL',
+                                         'http://127.0.0.1:11434')
 
         # HF-specific attributes (only used when backend=='hf')
         self._loaded = False
@@ -106,23 +113,90 @@ class LLMModel:
             full_prompt = full_prompt + "\nANSWER:\n"
 
         if self.backend == 'ollama':
-            # Use the ollama CLI to generate. This keeps the code dependency-free
-            # for Ollama usage and works with local Ollama runtimes.
-            cmd = f"ollama generate {shlex.quote(self.model_id)} --temperature {temperature} --max {int(max_new_tokens)} {shlex.quote(full_prompt)}"
+            # Prefer the `ollama` python package (if installed), otherwise
+            # call the local Ollama HTTP API at `self.ollama_url`. If both
+            # attempts fail, fall back to the `ollama` CLI (if available).
             try:
-                proc = subprocess.run(shlex.split(cmd),
-                                      capture_output=True,
-                                      text=True,
-                                      check=False)
-                if proc.returncode != 0:
-                    raise RuntimeError(
-                        f"ollama generate failed: {proc.stderr}")
-                response = proc.stdout
-                return response, full_prompt
-            except FileNotFoundError:
-                raise RuntimeError(
-                    "ollama CLI not found; ensure Ollama is installed and on PATH"
-                )
+                import ollama as _ollama
+
+                try:
+                    client = _ollama.Ollama(host=self.ollama_url)
+                    result = client.generate(self.model_id,
+                                             full_prompt,
+                                             temperature=temperature,
+                                             max_tokens=int(max_new_tokens))
+                    if isinstance(result, (dict, list)):
+                        resp_text = json.dumps(result)
+                    else:
+                        resp_text = str(result)
+                    return resp_text, full_prompt
+                except AttributeError:
+                    # Try module-level generate signature
+                    result = _ollama.generate(self.model_id,
+                                              full_prompt,
+                                              temperature=temperature,
+                                              max_tokens=int(max_new_tokens),
+                                              host=self.ollama_url)
+                    if isinstance(result, (dict, list)):
+                        resp_text = json.dumps(result)
+                    else:
+                        resp_text = str(result)
+                    return resp_text, full_prompt
+            except Exception:
+                # HTTP fallback
+                try:
+                    url = self.ollama_url.rstrip('/') + '/v1/generate'
+                    payload = {
+                        'model': self.model_id,
+                        'prompt': full_prompt,
+                        'temperature': float(temperature),
+                        'max_tokens': int(max_new_tokens)
+                    }
+                    resp = requests.post(url, json=payload, timeout=120)
+                    try:
+                        data = resp.json()
+
+                        def _extract_text(obj):
+                            if isinstance(obj, str):
+                                return obj
+                            if isinstance(obj, list):
+                                return '\n'.join(
+                                    filter(None,
+                                           (_extract_text(i) for i in obj)))
+                            if isinstance(obj, dict):
+                                parts = []
+                                for k, v in obj.items():
+                                    if k in ('text', 'content') and isinstance(
+                                            v, str):
+                                        parts.append(v)
+                                    else:
+                                        parts.append(_extract_text(v))
+                                return '\n'.join(filter(None, parts))
+                            return ''
+
+                        resp_text = _extract_text(data)
+                        if not resp_text:
+                            resp_text = json.dumps(data)
+                        return resp_text, full_prompt
+                    except ValueError:
+                        return resp.text, full_prompt
+                except Exception:
+                    # Final fallback: try CLI
+                    cmd = f"ollama generate {shlex.quote(self.model_id)} --temperature {temperature} --max {int(max_new_tokens)} {shlex.quote(full_prompt)}"
+                    try:
+                        proc = subprocess.run(shlex.split(cmd),
+                                              capture_output=True,
+                                              text=True,
+                                              check=False)
+                        if proc.returncode != 0:
+                            raise RuntimeError(
+                                f"ollama generate failed: {proc.stderr}")
+                        response = proc.stdout
+                        return response, full_prompt
+                    except FileNotFoundError:
+                        raise RuntimeError(
+                            "ollama client unavailable; install the `ollama` python package or the Ollama CLI, or ensure the local Ollama server is reachable at the URL in OLLAMA_API_URL"
+                        )
 
         # fallback to huggingface transformers if requested
         if self.backend == 'hf':
