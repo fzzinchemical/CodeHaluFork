@@ -63,6 +63,7 @@ def main(args):
                              extract_pattern=r'```([\s\S]*?)```')
         case "deepseekcoder":
             model = LLMModel(
+                backend="ollama",
                 name='deepseek_coder_6_7b',
                 model_id='deepseek-ai/deepseek-coder-6.7b-instruct',
                 prompt_template=
@@ -70,6 +71,7 @@ def main(args):
                 extract_pattern=r'### Response:.*?```python(.*?)```')
         case "gemma":
             model = LLMModel(
+                backend="ollama",
                 name='gemma_7b',
                 model_id='google/gemma-7b',
                 access_token='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',
@@ -77,6 +79,7 @@ def main(args):
                 extract_pattern=r'ANSWER:(.*?)<eos>')
         case "mixtral_8x_7b":
             model = LLMModel(
+                backend="ollama",
                 name='mixtral_8x_7B',
                 model_id='mistralai/Mixtral-8x7B-Instruct-v0.1',
                 access_token='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',
@@ -84,18 +87,21 @@ def main(args):
                 extract_pattern=r'```python(.*?)```')
         case "mixtral_7b":
             model = LLMModel(
+                backend="ollama",
                 name='mixtral_7B',
                 model_id='mistralai/Mistral-7B-Instruct-v0.2',
                 access_token='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',
                 prompt_template='<s>[INST] {prompt} [/INST] ',
                 extract_pattern=r'```python(.*?)```')
         case "llama2":
-            model = LLMModel(name='llama2',
+            model = LLMModel(backend="ollama",
+                             name='llama2',
                              model_id='meta-llama/Llama-2-7b-chat-hf',
                              prompt_template='<s>[INST] {prompt} [/INST] ',
                              extract_pattern=r'```([\s\S]*?)```')
         case "llama3":
-            model = LLMModel(name='llama3',
+            model = LLMModel(backend="ollama",
+                             name='llama3',
                              model_id='meta-llama/Meta-Llama-3-8B-Instruct',
                              prompt_template='{prompt}',
                              extract_pattern=r'```python(.*?)```')
