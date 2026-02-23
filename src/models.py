@@ -1,12 +1,12 @@
 import re
 import random
+import subprocess
+import shlex
 
 import numpy as np
 
 import torch
 from typing import Optional
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from huggingface_hub import login
 
 
 def set_random_seed(seed: Optional[int]):
@@ -27,10 +27,13 @@ class StopAtSpecificTokenCriteria(torch.nn.Module):
 
 
 class LLMModel:
-    """Lightweight LLM wrapper that lazily loads HF models and provides uniform generate/extract.
+    """Lightweight LLM wrapper that uses an execution backend (default: `ollama`).
 
-    Instantiate module-level objects (e.g. `mixtral_8x_7B`) instead of defining a class
-    per-model.
+    Parameters
+    - name: logical name
+    - model_id: backend model identifier (for ollama this is the ollama model name)
+    - backend: 'ollama' or 'hf' (hf kept for compatibility but default is 'ollama')
+    - prompt_template / extract_pattern as before
     """
 
     def __init__(self,
@@ -40,6 +43,7 @@ class LLMModel:
                  access_token: Optional[str] = None,
                  prompt_template: Optional[str] = None,
                  extract_pattern: Optional[str] = None,
+                 backend: str = 'ollama',
                  trust_remote_code: bool = True):
         self.name = name
         self.model_id = model_id
@@ -47,41 +51,42 @@ class LLMModel:
         self.access_token = access_token
         self.prompt_template = prompt_template
         self.extract_pattern = extract_pattern
+        self.backend = backend
         self.trust_remote_code = trust_remote_code
 
+        # HF-specific attributes (only used when backend=='hf')
         self._loaded = False
         self.tokenizer = None
         self.model = None
         self.device = None
 
-    def _ensure_loaded(self):
+    def _ensure_loaded_hf(self):
         if self._loaded:
             return
         if self.access_token:
             try:
-                login(self.access_token)
+                from huggingface_hub import login as _login
+                _login(self.access_token)
             except Exception:
                 pass
 
-        self.tokenizer = AutoTokenizer.from_pretrained(
+        from transformers import AutoTokenizer as _AT, AutoModelForCausalLM as _AM
+        self.tokenizer = _AT.from_pretrained(
             self.tokenizer_id,
             use_fast=True,
             trust_remote_code=self.trust_remote_code)
-        self.model = AutoModelForCausalLM.from_pretrained(
+        self.model = _AM.from_pretrained(
             self.model_id,
             torch_dtype=torch.float16,
             low_cpu_mem_usage=True,
             trust_remote_code=self.trust_remote_code,
             device_map='auto')
-
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() else "cpu")
         try:
             self.model.to(self.device)
         except Exception:
-            # some HF models manage device_map themselves
             pass
-
         self._loaded = True
 
     def _build_prompt(self, prompt: str) -> str:
@@ -96,15 +101,34 @@ class LLMModel:
                  prompt: str,
                  temperature: float = 0.0,
                  max_new_tokens: int = 2048):
-        self._ensure_loaded()
         full_prompt = self._build_prompt(prompt)
-        # Keep a trailing ANSWER marker for consistency with previous code
         if not full_prompt.endswith("\nANSWER:\n"):
             full_prompt = full_prompt + "\nANSWER:\n"
 
-        inputs = self.tokenizer(full_prompt,
-                                return_tensors="pt").to(self.device)
-        try:
+        if self.backend == 'ollama':
+            # Use the ollama CLI to generate. This keeps the code dependency-free
+            # for Ollama usage and works with local Ollama runtimes.
+            cmd = f"ollama generate {shlex.quote(self.model_id)} --temperature {temperature} --max {int(max_new_tokens)} {shlex.quote(full_prompt)}"
+            try:
+                proc = subprocess.run(shlex.split(cmd),
+                                      capture_output=True,
+                                      text=True,
+                                      check=False)
+                if proc.returncode != 0:
+                    raise RuntimeError(
+                        f"ollama generate failed: {proc.stderr}")
+                response = proc.stdout
+                return response, full_prompt
+            except FileNotFoundError:
+                raise RuntimeError(
+                    "ollama CLI not found; ensure Ollama is installed and on PATH"
+                )
+
+        # fallback to huggingface transformers if requested
+        if self.backend == 'hf':
+            self._ensure_loaded_hf()
+            inputs = self.tokenizer(full_prompt,
+                                    return_tensors="pt").to(self.device)
             output = self.model.generate(
                 inputs['input_ids'],
                 max_new_tokens=max_new_tokens,
@@ -117,60 +141,15 @@ class LLMModel:
             output = output[0].to("cpu")
             response = self.tokenizer.decode(output, skip_special_tokens=True)
             return response, full_prompt
-        except Exception as e:
-            raise
+
+        raise RuntimeError(f"Unsupported backend: {self.backend}")
 
     def extract_code(self, response: str) -> str:
         pattern = self.extract_pattern or r'```python(.*?)```'
         matches = re.findall(pattern, response, re.DOTALL)
         if matches:
             return matches[-1]
-        # fallback: any fenced block
         matches = re.findall(r'```([\s\S]*?)```', response, re.DOTALL)
         if matches:
             return matches[-1]
         return response
-
-
-# Module-level preconfigured model instances. Import these rather than instantiating
-# classes for each model. These are lazily loaded when `generate()` is called.
-
-mixtral_8x_7B = LLMModel(name='mixtral_8x_7B',
-                         model_id='mistralai/Mixtral-8x7B-Instruct-v0.1',
-                         access_token='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',
-                         prompt_template='<s>[INST] {prompt} [/INST] ',
-                         extract_pattern=r'```python(.*?)```')
-
-mixtral_7B = LLMModel(name='mixtral_7B',
-                      model_id='mistralai/Mistral-7B-Instruct-v0.2',
-                      access_token='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',
-                      prompt_template='<s>[INST] {prompt} [/INST] ',
-                      extract_pattern=r'```python(.*?)```')
-
-gemma_7b = LLMModel(name='gemma_7b',
-                    model_id='google/gemma-7b',
-                    access_token='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',
-                    prompt_template='{prompt}',
-                    extract_pattern=r'ANSWER:(.*?)<eos>')
-
-codellama_7b = LLMModel(name='codellama_7b',
-                        model_id='codellama/CodeLlama-7b-Instruct-hf',
-                        prompt_template='<s>[INST] {prompt} [/INST]',
-                        extract_pattern=r'```([\s\S]*?)```')
-
-deepseek_coder_6_7b = LLMModel(
-    name='deepseek_coder_6_7b',
-    model_id='deepseek-ai/deepseek-coder-6.7b-instruct',
-    prompt_template=
-    '''You are an AI programming assistant, utilizing the DeepSeek Coder model.\n### Instruction:\n{prompt}\n### Response:\n''',
-    extract_pattern=r'### Response:.*?```python(.*?)```')
-
-llama2 = LLMModel(name='llama2',
-                  model_id='meta-llama/Llama-2-7b-chat-hf',
-                  prompt_template='<s>[INST] {prompt} [/INST] ',
-                  extract_pattern=r'```([\s\S]*?)```')
-
-llama3 = LLMModel(name='llama3',
-                  model_id='meta-llama/Meta-Llama-3-8B-Instruct',
-                  prompt_template='{prompt}',
-                  extract_pattern=r'```python(.*?)```')
