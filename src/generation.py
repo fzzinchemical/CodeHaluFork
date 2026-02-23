@@ -2,18 +2,14 @@ import argparse
 import os
 import re
 import json
-
 from tqdm import tqdm
-
 from models import LLMModel
-
-from datasets import load_dataset
-import json
 
 EOF_STRINGS = ["\nQUESTION", "\n---", "\nANSWER", "<|endoftext|>"]
 
 
 def truncate_after_eof_strings(text):
+    """Truncate the input text at the first occurrence of any of the EOF_STRINGS."""
     pattern = '|'.join(re.escape(s) for s in EOF_STRINGS)
     match = re.search(pattern, text)
 
@@ -24,12 +20,14 @@ def truncate_after_eof_strings(text):
 
 
 def read_json(file_path):
+    """Reads a JSON file and returns the data."""
     with open(file_path, 'r', encoding='utf-8') as file:
         data = json.load(file)
     return data
 
 
 def generate_prompt(problem):
+    """Generates a prompt for the given problem."""
     prompt = "\nQUESTION:\n"
     prompt += problem["question"]
     starter_code = problem["starter_code"] if len(
@@ -144,7 +142,7 @@ def main(args):
                 print(f"Failed to generate for problem {problem['task_id']}")
                 break  # Break out of the run_id loop to move on to the next problem
 
-            with open(args.save_path, 'a') as file:
+            with open(args.save_path, 'a', encoding='utf-8') as file:
                 json.dump(
                     {
                         "task_id": problem["task_id"],
